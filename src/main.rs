@@ -9,6 +9,7 @@ enum Command {
     Remove(String),
     List(Option<String>),
     Refresh,
+    Clear,
 }
 
 struct Task {
@@ -33,7 +34,6 @@ struct TaskFile {
 
 impl TaskFile {
     fn new(path: PathBuf) -> TaskFile {
-        print!("{}", path.display());
         return TaskFile { path };
     }
 
@@ -41,7 +41,9 @@ impl TaskFile {
         let tasks = self.parse();
         let mut new_tasks = String::new();
         let mut completed = false;
-        let priority: u32 = task.data[3].parse().expect("Priority must be a number.");
+        let priority: u32 = task.data[3]
+            .parse()
+            .expect("Priority must be a number. See `todo --help` for usage.");
         for t in tasks {
             if !completed && t.data[3].parse::<u32>().unwrap() < priority {
                 new_tasks.push_str(&task.to_string());
@@ -106,11 +108,12 @@ fn main() {
     let mut tasks = TaskFile::new(path);
     match command {
         Add(task) => tasks.add_task(task),
-        Remove(task) => tasks.remove_task(task),
+        Remove(re) => tasks.remove_task(re),
         List(re) => match re {
             Some(re) => {
                 let tasks = tasks.parse();
-                let re = Regex::new(&re).expect("Invalid regular expression.");
+                let re = Regex::new(&re)
+                    .expect("Invalid regular expression. See `todo --help` for usage.");
                 for task in tasks {
                     if re.find(&task.data[0]).is_some() {
                         println!("{}", task.data[0]);
@@ -129,6 +132,7 @@ fn main() {
         Refresh => {
             panic!("Not yet implemented");
         }
+        Clear => tasks.remove_task(".*".to_string()),
     }
 }
 
@@ -140,38 +144,29 @@ fn parse() -> Command {
         .expect("Missing command. See `todo --help` for usage.");
     match command.as_str() {
         "add" => return Add(parse_task(args)),
-        "remove" => return Remove(args.nth(0).expect("Missing task to remove.")),
+        "remove" => {
+            return Remove(
+                args.nth(0)
+                    .expect("Missing task to remove. See `todo --help` for usage."),
+            )
+        }
         "list" => return List(args.nth(0)),
         "refresh" => return Refresh,
+        "clear" => return Clear,
         _ => panic!("Unrecognized command. See `todo --help` for usage."),
     }
 }
 
 fn parse_task(mut args: Args) -> Task {
-    let mut data = [String::new(), String::new(), String::new(), String::new()];
+    let mut data = [String::new(), String::new(), String::new(), String::from("0")];
     let name = args
         .nth(0)
         .expect("Missing task to remove. See `todo --help` for usage.");
     data[0] = name;
     for i in 1..4 {
-        if i == 3 {
-            match args.nth(0) {
-                Some(field) => {
-                    for c in field.chars() {
-                        match c {
-                            '0'..='9' => (),
-                            _ => panic!("Priority must be a number. See `todo --help` for usage."),
-                        }
-                    }
-                    data[3] = field;
-                }
-                None => data[3] = String::from("0"),
-            }
-        } else {
-            match args.nth(0) {
-                Some(field) => data[i] = field,
-                None => break,
-            }
+        match args.nth(0) {
+            Some(field) => data[i] = field,
+            None => break,
         }
     }
     return Task { data };
