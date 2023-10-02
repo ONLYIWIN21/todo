@@ -186,7 +186,7 @@ fn main() {
                     if re.find(&task.data[0]).is_some() {
                         println!("* {}:", task.data[0]);
                         println!("  {}", task.data[1]);
-                        println!("  Due by {}", task.data[2]);
+                        println!("  Due by {}\n", task.data[2]);
                     }
                 }
             }
@@ -195,7 +195,7 @@ fn main() {
                 for task in tasks {
                     println!("* {}:", task.data[0]);
                     println!("  {}", task.data[1]);
-                    println!("  Due by {}", task.data[2]);
+                    println!("  Due by {}\n", task.data[2]);
                 }
             }
         },
