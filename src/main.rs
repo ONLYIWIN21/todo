@@ -95,13 +95,7 @@ impl TaskFile {
         let tasks = self.parse()?;
         let mut new_tasks = Vec::new();
         for task in tasks {
-            let mut found = false;
-            for refresh_task in &refresh_tasks {
-                if task.data[0] == refresh_task.data[0] {
-                    found = true;
-                }
-            }
-            if !found && !task.auto_delete {
+            if !task.auto_delete {
                 new_tasks.push(task);
             }
         }
@@ -111,13 +105,15 @@ impl TaskFile {
                 let refresh_task = &refresh_tasks[i];
                 if task.data[3] < refresh_task.data[3] {
                     ret.push_str(&refresh_task.to_string());
-                    refresh_tasks.remove(i);
+                    refresh_tasks[i].auto_delete = false;
                 }
             }
             ret.push_str(&task.to_string());
         }
         for task in refresh_tasks {
-            ret.push_str(&task.to_string());
+            if task.auto_delete {
+                ret.push_str(&task.to_string());
+            }
         }
         return self.write(ret);
     }
