@@ -1,32 +1,60 @@
+use clap::{Args, Command, CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Generator, Shell};
 use regex::Regex;
-use std::env::{current_exe, Args};
+use std::env::current_exe;
 use std::fs::{create_dir, File};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 mod refresh;
 
-enum Command {
-    Add(Task),
-    Remove(String),
-    List(Option<String>),
-    Refresh,
-    Clear,
-    Help,
+#[derive(Parser)]
+#[command(name = "todo")]
+struct Cli {
+    #[clap(subcommand)]
+    subcommand: Option<SubCommand>,
+    #[arg(long = "generate", value_enum)]
+    generator: Option<Shell>,
 }
 
+#[derive(Subcommand)]
+enum SubCommand {
+    Add(Task),
+    Remove(Remove),
+    List(List),
+    Refresh,
+    Clear,
+}
+
+#[derive(Args)]
 pub struct Task {
-    data: [String; 4],
+    name: String,
+    description: String,
+    due_date: String,
+    priority: u32,
     auto_delete: bool,
+}
+
+#[derive(Args)]
+struct Remove {
+    re: String,
+}
+
+#[derive(Args)]
+struct List {
+    re: Option<String>,
 }
 
 impl Task {
     fn to_string(&self) -> String {
         let mut string = String::new();
-        for field in &self.data {
-            string.push_str(&field);
-            string.push('|');
-        }
+        string.push_str(
+            format!(
+                "{}|{}|{}|{}|",
+                self.name, self.description, self.due_date, self.priority
+            )
+            .as_str(),
+        );
         if self.auto_delete {
             string.push('1');
         } else {
@@ -34,6 +62,25 @@ impl Task {
         }
         string.push('\n');
         return string;
+    }
+
+    fn from_string(string: String) -> Task {
+        let mut task = Task {
+            name: String::new(),
+            description: String::new(),
+            due_date: String::new(),
+            priority: 0,
+            auto_delete: false,
+        };
+        let mut data = string.split('|');
+        task.name = option(data.next(), "Invalid tasks file.").to_string();
+        task.description = option(data.next(), "Invalid tasks file.").to_string();
+        task.due_date = option(data.next(), "Invalid tasks file.").to_string();
+        task.priority = option(data.next(), "Invalid tasks file.").parse().unwrap();
+        if option(data.next(), "Invalid tasks file.") == "1" {
+            task.auto_delete = true;
+        }
+        return task;
     }
 }
 
@@ -46,24 +93,15 @@ impl TaskFile {
         return TaskFile { path };
     }
 
-    fn add_task(&self, task: Task) -> Result<(), String> {
-        let tasks = self.parse()?;
+    fn add_task(&self, task: Task) {
+        let tasks = self.parse();
         let mut new_tasks = String::new();
         let mut completed = false;
-        let priority: u32 = handle(
-            task.data[3].parse(),
-            "Priority must be a number. See `todo --help` for usage.",
-        )?;
         for t in tasks {
-            if t.data[0] == task.data[0] {
-                return Err(format!("Duplicate task '{}'.", t.data[0]));
+            if t.name == task.name {
+                error(&format!("Duplicate task '{}'.", t.name));
             }
-            if !completed
-                && handle(
-                    t.data[3].parse::<u32>(),
-                    "Previous task has non integer priority.",
-                )? < priority
-            {
+            if !completed && t.priority < task.priority {
                 new_tasks.push_str(&task.to_string());
                 completed = true;
             }
@@ -72,27 +110,27 @@ impl TaskFile {
         if !completed {
             new_tasks.push_str(&task.to_string());
         }
-        return self.write(new_tasks);
+        self.write(new_tasks);
     }
 
-    fn remove_task(&mut self, re: String) -> Result<(), String> {
-        let tasks = self.parse()?;
-        let re = handle(
+    fn remove_task(&mut self, re: String) {
+        let tasks = self.parse();
+        let re = result(
             Regex::new(&re),
             "Invalid regular expression. See `todo --help` for usage.",
-        )?;
+        );
         let mut new_tasks = String::new();
         for task in tasks {
-            if re.find(&task.data[0]).is_none() {
+            if re.find(&task.name).is_none() {
                 new_tasks.push_str(&task.to_string());
             }
         }
-        return self.write(new_tasks);
+        self.write(new_tasks);
     }
 
-    fn refresh(&mut self) -> Result<(), String> {
+    fn refresh(&mut self) {
         let mut refresh_tasks = refresh::refresh();
-        let tasks = self.parse()?;
+        let tasks = self.parse();
         let mut new_tasks = Vec::new();
         for task in tasks {
             if !task.auto_delete {
@@ -103,7 +141,7 @@ impl TaskFile {
         for task in new_tasks {
             for i in 0..refresh_tasks.len() {
                 let refresh_task = &refresh_tasks[i];
-                if task.data[3] < refresh_task.data[3] {
+                if task.priority < refresh_task.priority {
                     ret.push_str(&refresh_task.to_string());
                     refresh_tasks[i].auto_delete = false;
                 }
@@ -115,159 +153,103 @@ impl TaskFile {
                 ret.push_str(&task.to_string());
             }
         }
-        return self.write(ret);
+        self.write(ret);
     }
 
-    fn parse(&self) -> Result<Vec<Task>, String> {
-        let file = handle(File::open(&self.path), "Failed to open tasks file.")?;
+    fn parse(&self) -> Vec<Task> {
+        let file = result(File::open(&self.path), "Failed to open tasks file.");
         let contents = io::BufReader::new(file).lines();
         let mut tasks = Vec::new();
         for line in contents {
-            let line = handle(line, "Can't read from tasks file.")?;
+            let line = result(line, "Can't read from tasks file.");
             if line == "" {
                 continue;
             }
-            let mut task = Task {
-                data: [String::new(), String::new(), String::new(), String::new()],
-                auto_delete: false,
-            };
-            let mut i = 0;
-            for field in line.split('|').take(4) {
-                task.data[i] = field.to_string();
-                i += 1;
-            }
-            if line.chars().last().ok_or("Empty line in tasks file.")? == '1' {
-                task.auto_delete = true;
-            }
+            let task = Task::from_string(line);
             tasks.push(task);
         }
-        return Ok(tasks);
+        return tasks;
     }
 
-    fn write(&self, contents: String) -> Result<(), String> {
-        let mut file = handle(File::create(&self.path), "Failed to open tasks file.")?;
-        return handle(
+    fn write(&self, contents: String) {
+        let mut file = result(File::create(&self.path), "Failed to open tasks file.");
+        result(
             file.write_all(contents.as_bytes()),
             "Failed to write to tasks file.",
         );
     }
 }
 
+fn print_completions<G: Generator>(gen: G, cmd: &mut Command) {
+    generate(gen, cmd, cmd.get_name().to_string(), &mut io::stdout());
+}
+
 fn main() {
-    use Command::*;
-    let command = error(parse());
-    let mut path = error(handle(current_exe(), "Failed to get executable path."));
+    use SubCommand::*;
+    let command = Cli::parse();
+    if let Some(generator) = command.generator {
+        let mut cmd = Cli::command();
+        print_completions(generator, &mut cmd);
+    }
+    let mut path = result(current_exe(), "Failed to get executable path.");
     path.pop();
     path.push(".todo");
     let _ = create_dir(&path);
     path.push("tasks.txt");
-    match File::open(&path) {
-        Ok(_) => (),
-        Err(_) => {
-            error(handle(File::create(&path), "Failed to create tasks file."));
-        }
+    if File::open(&path).is_err() {
+        result(File::create(&path), "Failed to create tasks file.");
+    }
+    if command.subcommand.is_none() {
+        return;
     }
     let mut tasks = TaskFile::new(path);
-    match command {
-        Add(task) => error(tasks.add_task(task)),
-        Remove(re) => error(tasks.remove_task(re)),
-        List(re) => match re {
+    match command.subcommand.unwrap() {
+        Add(task) => tasks.add_task(task),
+        Remove(remove) => tasks.remove_task(remove.re),
+        List(list) => match list.re {
             Some(re) => {
-                let tasks = error(tasks.parse());
-                let re = error(handle(
+                let tasks = tasks.parse();
+                let re = result(
                     Regex::new(&re),
                     "Invalid regular expression. See `todo --help` for usage.",
-                ));
+                );
                 for task in tasks {
-                    if re.find(&task.data[0]).is_some() {
-                        println!("* {}:", task.data[0]);
-                        println!("  {}", task.data[1]);
-                        println!("  Due by {}\n", task.data[2]);
+                    if re.find(&task.name).is_some() {
+                        println!("* {}:", task.name);
+                        println!("  {}", task.description);
+                        println!("  Due by {}\n", task.due_date);
                     }
                 }
             }
             None => {
-                let tasks = error(tasks.parse());
+                let tasks = tasks.parse();
                 for task in tasks {
-                    println!("* {}:", task.data[0]);
-                    println!("  {}", task.data[1]);
-                    println!("  Due by {}\n", task.data[2]);
+                    println!("* {}:", task.name);
+                    println!("  {}", task.description);
+                    println!("  Due by {}\n", task.due_date);
                 }
             }
         },
-        Refresh => error(tasks.refresh()),
-        Clear => error(tasks.remove_task(".*".to_string())),
-        Help => {
-            println!("Usage: todo <command> [arg]");
-            println!("Commands:");
-            println!("  add <name> [description] [due date] [priority]");
-            println!("  remove <regex>");
-            println!("  list [regex]");
-            println!("  refresh");
-            println!("  clear");
-            println!("  --help");
-        }
+        Refresh => tasks.refresh(),
+        Clear => tasks.remove_task(".*".to_string()),
     }
 }
 
-fn parse() -> Result<Command, String> {
-    use Command::*;
-    let mut args = std::env::args();
-    let command = args
-        .nth(1)
-        .ok_or("Missing command. See `todo --help` for usage.")?;
-    match command.as_str() {
-        "add" => return Ok(Add(parse_task(args)?)),
-        "remove" => {
-            return Ok(Remove(
-                args.nth(0)
-                    .ok_or("Missing task to remove. See `todo --help` for usage.")?,
-            ))
-        }
-        "list" => return Ok(List(args.nth(0))),
-        "refresh" => return Ok(Refresh),
-        "clear" => return Ok(Clear),
-        "--help" => return Ok(Help),
-        _ => return Err("Unrecognized command. See `todo --help` for usage.".to_string()),
+fn option<T>(option: Option<T>, message: &str) -> T {
+    match option {
+        Some(some) => return some,
+        None => error(message),
     }
 }
 
-fn parse_task(mut args: Args) -> Result<Task, String> {
-    let mut data = [
-        String::new(),
-        String::new(),
-        String::new(),
-        String::from("0"),
-    ];
-    let name = args
-        .nth(0)
-        .ok_or("Missing task to remove. See `todo --help` for usage.")?;
-    data[0] = name;
-    for i in 1..4 {
-        match args.nth(0) {
-            Some(field) => data[i] = field,
-            None => break,
-        }
-    }
-    return Ok(Task {
-        data,
-        auto_delete: false,
-    });
-}
-
-fn handle<T, E>(result: Result<T, E>, message: &str) -> Result<T, String> {
+fn result<T, E>(result: Result<T, E>, message: &str) -> T {
     match result {
-        Ok(ok) => return Ok(ok),
-        Err(_) => return Err(message.to_string()),
+        Ok(ok) => return ok,
+        Err(_) => error(message),
     }
 }
 
-fn error<T>(result: Result<T, String>) -> T {
-    match result {
-        Ok(ok) => ok,
-        Err(err) => {
-            eprintln!("{}", err);
-            std::process::exit(1);
-        }
-    }
+fn error(message: &str) -> ! {
+    eprintln!("{}", message);
+    std::process::exit(1);
 }
